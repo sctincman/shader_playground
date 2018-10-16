@@ -1,0 +1,9 @@
+[package]
+name = "shader_playground"
+version = "0.1.0"
+authors = ["Jonathan Tinkham <sctincman@gmail.com>"]
+
+[dependencies]
+glutin = "*"
+gl = "*"
+nalgebra = "*"
