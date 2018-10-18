@@ -4,7 +4,7 @@ extern crate nalgebra;
 
 use glutin::dpi::*;
 use glutin::GlContext;
-use nalgebra::{Matrix4, Vector3};
+use nalgebra::{Matrix4, Vector3, Perspective3};
 
 use gl::types::*;
 use std::mem;
@@ -13,25 +13,76 @@ use std::str;
 use std::ffi::CString;
 
 // Vertex data
-static VERTEX_DATA: [GLfloat; 6] = [0.0, 0.5, 0.5, -0.5, -0.5, -0.5];
+static VERTEX_DATA: [GLfloat; 72] = [-0.5, -0.5, -0.5,
+                                      0.5, -0.5, -0.5,
+                                     -0.5, -0.5,  0.5,
+                                      0.5, -0.5,  0.5,
+
+                                     -0.5, -0.5,  0.5,
+                                      0.5, -0.5,  0.5,
+                                     -0.5,  0.5,  0.5,
+                                      0.5,  0.5,  0.5,
+
+                                     -0.5, -0.5, -0.5,
+                                     -0.5, -0.5,  0.5,
+                                     -0.5,  0.5, -0.5,
+                                     -0.5,  0.5,  0.5,
+
+                                      0.5, -0.5, -0.5,
+                                      0.5, -0.5,  0.5,
+                                      0.5,  0.5, -0.5,
+                                      0.5,  0.5,  0.5,
+
+                                     -0.5, -0.5, -0.5,
+                                      0.5, -0.5, -0.5,
+                                     -0.5,  0.5, -0.5,
+                                      0.5,  0.5, -0.5,
+                                     
+                                     -0.5,  0.5, -0.5,
+                                      0.5,  0.5, -0.5,
+                                     -0.5,  0.5,  0.5,
+                                      0.5,  0.5,  0.5];
+
+static INDICES: [GLuint; 36] = [0, 1, 2,
+                                1, 2, 3,
+
+                                4, 5, 6,
+                                5, 6, 7,
+
+                                8, 9, 10,
+                                9, 10, 11,
+
+                                12, 13, 14,
+                                13, 14, 15,
+
+                                16, 17, 18,
+                                17, 18, 19,
+
+                                20, 21, 22,
+                                21, 22, 23];
+
+
 
 // Shader sources
 static VS_SRC: &'static str = "
 #version 330
-in vec2 position;
+in vec3 position;
+out vec4 color;
 
 uniform mat4 world;
 
 void main() {
-    gl_Position = world * vec4(position, 0.0, 1.0);
+    color = vec4(clamp(position, 0.0, 1.0), 1.0);
+    gl_Position = world * vec4(position, 1.0);
 }";
 
 static FS_SRC: &'static str = "
 #version 330
+in  vec4 color;
 out vec4 out_color;
 
 void main() {
-    out_color = vec4(1.0, 1.0, 1.0, 1.0);
+    out_color = color;
 }";
 
 fn compile_shader(src: &str, ty: GLenum) -> GLuint {
@@ -120,6 +171,7 @@ fn main() {
     unsafe {
         gl::load_with(|symbol| gl_window.get_proc_address(symbol) as *const _);
         gl::ClearColor(0.2, 0.2, 0.2, 1.0);
+        gl::Enable(gl::DEPTH_TEST);
     }
 
     // Create GLSL shaders
@@ -129,8 +181,15 @@ fn main() {
 
     let mut vao = 0;
     let mut vbo = 0;
+    let mut ibo = 0;
     let world_location;
+    let pos_attr;
     let mut scale:f32 = 0.0;
+
+    let mut projection = Perspective3::new((16.0/9.0) as f32,
+                                           3.14 / 4.0,
+                                           0.1,
+                                           10000.0);
 
     unsafe {
         // Create Vertex Array Object
@@ -146,23 +205,31 @@ fn main() {
             mem::transmute(&VERTEX_DATA[0]),
             gl::STATIC_DRAW,
         );
-
         // Use shader program
         gl::UseProgram(program);
         gl::BindFragDataLocation(program, 0, CString::new("out_color").unwrap().as_ptr());
 
         // Specify the layout of the vertex data
-        let pos_attr = gl::GetAttribLocation(program, CString::new("position").unwrap().as_ptr());
+        pos_attr = gl::GetAttribLocation(program, CString::new("position").unwrap().as_ptr()) as GLuint;
         gl::EnableVertexAttribArray(pos_attr as GLuint);
         gl::VertexAttribPointer(
-            pos_attr as GLuint,
-            2,
+            pos_attr,
+            3,
             gl::FLOAT,
             gl::FALSE as GLboolean,
             0,
             ptr::null(),
         );
 
+        // Create an index buffer and copy indices
+        gl::GenBuffers(1, &mut ibo);
+        gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ibo);
+        gl::BufferData(
+            gl::ELEMENT_ARRAY_BUFFER,
+            (INDICES.len() * mem::size_of::<GLuint>()) as GLsizeiptr,
+            mem::transmute(&INDICES[0]),
+            gl::STATIC_DRAW,
+        );
         
         world_location = gl::GetUniformLocation(program, CString::new("world").unwrap().as_ptr());
         if world_location == -1 {
@@ -180,10 +247,19 @@ fn main() {
                     glutin::WindowEvent::Resized(logical_size) => {
                         window_size = logical_size;
                         let dpi_factor = gl_window.get_hidpi_factor();
-                        gl_window.resize(logical_size.to_physical(dpi_factor));
+                        let physical_size = window_size.to_physical(dpi_factor);
+                        gl_window.resize(physical_size);
+                        unsafe {
+                            gl::Viewport(0, 0, physical_size.width as i32, physical_size.height as i32);
+                        }
+                        projection.set_aspect((window_size.width / window_size.height) as f32);
                     },
                     glutin::WindowEvent::HiDpiFactorChanged(dpi_factor) => {
-                        gl_window.resize(window_size.to_physical(dpi_factor));
+                        let physical_size = window_size.to_physical(dpi_factor);
+                        gl_window.resize(physical_size);
+                        unsafe {
+                            gl::Viewport(0, 0, physical_size.width as i32, physical_size.height as i32);
+                        }
                     },
                     _ => ()
                 },
@@ -192,16 +268,23 @@ fn main() {
         });
 
         scale += 0.01;
-        let trans = Vector3::new(scale.sin(), 0.0, 0.0);
-        let mat = Matrix4::new_scaling(scale.sin()).append_translation(&trans);
+        let trans = Vector3::new(scale.sin(), (2.0*scale).sin(), -10.0);
+        let mat = projection.as_matrix() *
+            Matrix4::from_euler_angles(scale, scale*1.2, 0.0)
+            //.append_scaling((scale.sin() + 1.0)/2.0)
+            .append_translation(&trans)
+            ;
 
         unsafe {
-            gl::Clear(gl::COLOR_BUFFER_BIT);
+            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
             
             gl::UniformMatrix4fv(world_location, 1, gl::FALSE, mat.as_slice().as_ptr());
 
-            // Draw a triangle from the 3 vertices
-            gl::DrawArrays(gl::TRIANGLES, 0, 3);
+            gl::EnableVertexAttribArray(pos_attr);
+
+            gl::DrawElements(gl::TRIANGLES, 36, gl::UNSIGNED_INT, ptr::null());
+
+            gl::DisableVertexAttribArray(pos_attr);
         }
 
         gl_window.swap_buffers().unwrap();
