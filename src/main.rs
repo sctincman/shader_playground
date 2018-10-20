@@ -4,13 +4,75 @@ extern crate nalgebra;
 
 use glutin::dpi::*;
 use glutin::GlContext;
-use nalgebra::{Matrix4, Vector3, Perspective3};
+use nalgebra::{Matrix4, Vector3, Point3, Perspective3, Isometry3};
 
 use gl::types::*;
 use std::mem;
 use std::ptr;
 use std::str;
 use std::ffi::CString;
+
+struct Camera {
+    position: Point3<f32>,
+    target: Point3<f32>,
+    up: Vector3<f32>,
+    projection: Perspective3<f32>
+}
+
+impl Camera {
+    fn new(aspect: f32, fov: f32, z_near: f32, z_far: f32) -> Camera {
+        Camera {
+            position: Point3::new(0.0, 0.0, 0.0),
+            target: Point3::new(0.0, 0.0, 1.0),
+            up: Vector3::new(0.0, 1.0, 0.0),
+            projection: Perspective3::new(aspect,
+                                          fov,
+                                          z_near,
+                                          z_far),
+        }
+    }
+
+    fn view(&self) -> Isometry3<f32> {
+        Isometry3::look_at_rh(&self.position, &self.target, &self.up)
+    }
+
+    fn handle_keys(&mut self, scancode: u32) -> bool {
+        match scancode {
+            17 => {
+                let direction = (self.target - self.position).normalize();
+                self.position = self.position + (direction * 0.00016);
+                true
+            }
+            30 => {
+                let direction = (self.target - self.position)
+                    .normalize()
+                    .cross(&self.up);
+                self.position = self.position + (direction * 0.00016);
+                true
+            }
+            31 => {
+                let direction = (self.target - self.position).normalize();
+                self.position = self.position - (direction * 0.00016);
+                true
+            }
+            32 => {
+                let direction = (self.target - self.position)
+                    .normalize()
+                    .cross(&self.up);
+                self.position = self.position - (direction * 0.00016);
+                true
+            }
+            _ => false
+        }
+    }
+
+    fn handle_mouse(&mut self, delta_x: f32, delta_y: f32) {
+        //TODO add stateful rotation and fix this garbage
+        self.target.x += delta_x;
+        self.target.y += delta_y
+    }
+}
+
 
 // Vertex data
 static VERTEX_DATA: [GLfloat; 72] = [-0.5, -0.5, -0.5,
@@ -186,10 +248,10 @@ fn main() {
     let pos_attr;
     let mut scale:f32 = 0.0;
 
-    let mut projection = Perspective3::new((16.0/9.0) as f32,
-                                           3.14 / 4.0,
-                                           0.1,
-                                           10000.0);
+    let mut camera = Camera::new(16.0/9.0,
+                                 3.14 / 4.0,
+                                 0.1,
+                                 10000.0);
 
     unsafe {
         // Create Vertex Array Object
@@ -252,7 +314,7 @@ fn main() {
                         unsafe {
                             gl::Viewport(0, 0, physical_size.width as i32, physical_size.height as i32);
                         }
-                        projection.set_aspect((window_size.width / window_size.height) as f32);
+                        camera.projection.set_aspect((window_size.width / window_size.height) as f32);
                     },
                     glutin::WindowEvent::HiDpiFactorChanged(dpi_factor) => {
                         let physical_size = window_size.to_physical(dpi_factor);
@@ -263,22 +325,38 @@ fn main() {
                     },
                     _ => ()
                 },
+                glutin::Event::DeviceEvent{ event, .. } => match event {
+                    glutin::DeviceEvent::Key(input) => {
+
+                        println!("(DeviceEvent) Key pressed: {}", input.scancode);
+                        
+                    },
+                    glutin::DeviceEvent::MouseMotion{delta} => {
+                        let delta_x: f32 = (delta.0 / window_size.width) as f32;
+                        let delta_y: f32 = (delta.1 / window_size.height) as f32;
+                        camera.handle_mouse(delta_x, delta_y);
+                        println!("(DeviceEvent) Move moved : {}, {}", delta_x, delta_y);
+                        
+                    },
+                    _ => ()
+                },
                 _ => ()
             }
         });
 
         scale += 0.01;
-        let trans = Vector3::new(scale.sin(), (2.0*scale).sin(), -10.0);
-        let mat = projection.as_matrix() *
-            Matrix4::from_euler_angles(scale, scale*1.2, 0.0)
-            //.append_scaling((scale.sin() + 1.0)/2.0)
-            .append_translation(&trans)
-            ;
+        let trans = Vector3::new(scale.sin(), (2.0*scale).sin(), 10.0);
+        let model = Matrix4::from_euler_angles(scale, scale*1.2, 0.0)
+            .append_translation(&trans);
+
+        let view = camera.view().to_homogeneous();
+
+        let model_view_projection = camera.projection.unwrap() * view * model;
 
         unsafe {
             gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
             
-            gl::UniformMatrix4fv(world_location, 1, gl::FALSE, mat.as_slice().as_ptr());
+            gl::UniformMatrix4fv(world_location, 1, gl::FALSE, model_view_projection.as_slice().as_ptr());
 
             gl::EnableVertexAttribArray(pos_attr);
 
