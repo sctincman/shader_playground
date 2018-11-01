@@ -11,65 +11,150 @@ use std::mem;
 use std::ptr;
 use std::str;
 use std::ffi::CString;
+use std::time;
 
+#[derive(PartialEq, Debug)]
+enum MoveVertical {
+    Up,
+    Down
+}
+
+#[derive(PartialEq, Debug)]
+enum MoveHorizontal {
+    Left,
+    Right
+}
+
+#[derive(Debug)]
 struct Camera {
     position: Point3<f32>,
-    target: Point3<f32>,
+    target: Option<Point3<f32>>,
+    direction: Vector3<f32>,
     up: Vector3<f32>,
-    projection: Perspective3<f32>
+    projection: Perspective3<f32>,
+
+    horizontal: Option<MoveHorizontal>,
+    vertical: Option<MoveVertical>
 }
 
 impl Camera {
     fn new(aspect: f32, fov: f32, z_near: f32, z_far: f32) -> Camera {
         Camera {
             position: Point3::new(0.0, 0.0, 0.0),
-            target: Point3::new(0.0, 0.0, 1.0),
+            target: Some(Point3::new(0.0, 0.0, 10.0)),
+            direction: Vector3::new(0.0, 0.0, 1.0),
             up: Vector3::new(0.0, 1.0, 0.0),
             projection: Perspective3::new(aspect,
                                           fov,
                                           z_near,
                                           z_far),
+            horizontal: None,
+            vertical: None,
         }
     }
 
     fn view(&self) -> Isometry3<f32> {
-        Isometry3::look_at_rh(&self.position, &self.target, &self.up)
-    }
-
-    fn handle_keys(&mut self, scancode: u32) -> bool {
-        match scancode {
-            17 => {
-                let direction = (self.target - self.position).normalize();
-                self.position = self.position + (direction * 0.00016);
-                true
-            }
-            30 => {
-                let direction = (self.target - self.position)
-                    .normalize()
-                    .cross(&self.up);
-                self.position = self.position + (direction * 0.00016);
-                true
-            }
-            31 => {
-                let direction = (self.target - self.position).normalize();
-                self.position = self.position - (direction * 0.00016);
-                true
-            }
-            32 => {
-                let direction = (self.target - self.position)
-                    .normalize()
-                    .cross(&self.up);
-                self.position = self.position - (direction * 0.00016);
-                true
-            }
-            _ => false
+        match self.target {
+            Some(target) => Isometry3::look_at_rh(&self.position, &target, &self.up),
+            None => Isometry3::look_at_rh(&self.position, &(self.position + self.direction), &self.up),
         }
     }
 
-    fn handle_mouse(&mut self, delta_x: f32, delta_y: f32) {
-        //TODO add stateful rotation and fix this garbage
-        self.target.x += delta_x;
-        self.target.y += delta_y
+    fn handle_keys(&mut self, input: glutin::KeyboardInput) -> bool {
+        //TODO actual fsm
+        let mut handled = false;
+        match input.scancode {
+            16 => {
+                if input.state == glutin::ElementState::Pressed {
+                    if self.target.is_none() {
+                        self.target = Some(Point3::new(0.0, 0.0, 10.0));
+                        handled = true;
+                    } else {
+                        self.target = None;
+                    }
+                }
+            },
+            17 => {
+                if input.state == glutin::ElementState::Pressed {
+                    if self.vertical.is_none() {
+                        self.vertical = Some(MoveVertical::Up);
+                        handled = true;
+                    }
+                } else {
+                    self.vertical = None;
+                    handled = true;
+                }
+            },
+            30 => {
+                if input.state == glutin::ElementState::Pressed {
+                    if self.horizontal.is_none() {
+                        self.horizontal = Some(MoveHorizontal::Left);
+                        handled = true;
+                    }
+                } else {
+                    self.horizontal = None;
+                    handled = true;
+                }
+            },
+            31 => {
+                if input.state == glutin::ElementState::Pressed {
+                    if self.vertical.is_none() {
+                        self.vertical = Some(MoveVertical::Down);
+                        handled = true;
+                    }
+                } else {
+                    self.vertical = None;
+                    handled = true;
+                }
+            },
+            32 => {
+                if input.state == glutin::ElementState::Pressed {
+                    if self.horizontal.is_none() {
+                        self.horizontal = Some(MoveHorizontal::Right);
+                        handled = true;
+                    }
+                } else {
+                    self.horizontal = None;
+                    handled = true;
+                }
+            },
+            _ => (),
+        }
+
+        handled
+    }
+
+    fn rotate(&mut self, delta_x: f32, delta_y: f32) {
+        if self.target.is_none() {
+            let rotation = Matrix4::from_scaled_axis(self.up * delta_x * self.projection.fovy())
+                * Matrix4::from_scaled_axis(self.direction.cross(&self.up) * delta_y * self.projection.fovy());
+            self.direction = rotation.transform_vector(&self.direction);
+        }
+    }
+
+    // TODO replace with ECS later
+    fn step(&mut self, time_step: time::Duration) {
+        if let Some(target) = self.target {
+            //update direction from target
+            self.direction = (target - self.position).normalize();
+        }
+
+        //move position from direction
+        match &self.vertical {
+            Some(dir) => match dir {
+                MoveVertical::Up => self.position += self.direction * 0.16,
+                MoveVertical::Down => self.position -= self.direction * 0.16,
+            },
+            None => ()
+        }
+
+        match &self.horizontal {
+            Some(dir) => match dir {
+                MoveHorizontal::Left => self.position -= self.direction.cross(&self.up) * 0.16,
+                MoveHorizontal::Right => self.position += self.direction.cross(&self.up) * 0.16,
+            },
+            None => ()
+        }
     }
 }
 
@@ -327,16 +412,12 @@ fn main() {
                 },
                 glutin::Event::DeviceEvent{ event, .. } => match event {
                     glutin::DeviceEvent::Key(input) => {
-
-                        println!("(DeviceEvent) Key pressed: {}", input.scancode);
-                        
+                        camera.handle_keys(input);
                     },
                     glutin::DeviceEvent::MouseMotion{delta} => {
                         let delta_x: f32 = (delta.0 / window_size.width) as f32;
                         let delta_y: f32 = (delta.1 / window_size.height) as f32;
-                        camera.handle_mouse(delta_x, delta_y);
-                        println!("(DeviceEvent) Move moved : {}, {}", delta_x, delta_y);
-                        
+                        camera.rotate(delta_x, delta_y);
                     },
                     _ => ()
                 },
@@ -344,10 +425,14 @@ fn main() {
             }
         });
 
+        camera.step(time::Duration::from_millis(16));
+        //println!("Camera: {:?}", camera);
+
         scale += 0.01;
         let trans = Vector3::new(scale.sin(), (2.0*scale).sin(), 10.0);
-        let model = Matrix4::from_euler_angles(scale, scale*1.2, 0.0)
-            .append_translation(&trans);
+        //let model = Matrix4::from_euler_angles(scale, scale*1.2, 0.0)
+        //    .append_translation(&trans);
+        let model = Matrix4::new_translation(&trans);
 
         let view = camera.view().to_homogeneous();
 
